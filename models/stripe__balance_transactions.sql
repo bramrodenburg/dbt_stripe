@@ -74,6 +74,17 @@ with balance_transaction as (
     select *
     from {{ var('transfer') }}
 
+), disputes_aggregated as (
+    /* Charges can be disputed more than once, even though this rarely happens.
+       Hence, we aggregate disputes on the charge_id level. */
+    select
+        charge_id,
+        source_relation,
+        array_agg(dispute_id) as dispute_ids,
+        array_agg(dispute_reason) as dispute_reasons,
+        sum(dispute_amount) as disputed_amount
+    from dispute
+    group by 1, 2
 )
 
 select
@@ -99,7 +110,7 @@ select
     case
         when balance_transaction.type in ('charge', 'payment') then charge.amount 
         when balance_transaction.type in ('refund', 'payment_refund') then refund.amount
-        when dispute_id is not null then dispute.dispute_amount
+        when dispute_ids is not null then disputes_aggregated.disputed_amount
         else null
     end as customer_facing_amount,
     case 
@@ -153,7 +164,7 @@ select
     cards.card_address_state,
     cards.card_address_postal_code,
     cards.card_address_country,
-    coalesce(charge.charge_id, refund.charge_id, dispute.charge_id) as charge_id,
+    coalesce(charge.charge_id, refund.charge_id, disputes_aggregated.charge_id) as charge_id,
     charge.created_at as charge_created_at,
     payment_intent.payment_intent_id,
 
@@ -176,8 +187,8 @@ select
     cards.funding as card_funding,
     cards.country as card_country,
     charge.statement_descriptor as charge_statement_descriptor ,
-    dispute.dispute_id,
-    dispute.dispute_reason,
+    disputes_aggregated.dispute_ids,
+    disputes_aggregated.dispute_reasons,
     refund.refund_id,
     refund.reason as refund_reason,
     transfers.transfer_id,
@@ -240,7 +251,7 @@ left join transfers
 left join charge as refund_charge 
     on refund.charge_id = refund_charge.charge_id
     and refund.source_relation = refund_charge.source_relation
-left join dispute
-    on charge.charge_id = dispute.charge_id
-    and charge.source_relation = dispute.source_relation
+left join disputes_aggregated
+    on charge.charge_id = disputes_aggregated.charge_id
+    and charge.source_relation = disputes_aggregated.source_relation
 
